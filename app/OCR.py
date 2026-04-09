@@ -25,6 +25,10 @@ MODELS_DIR = (BASE_DIR / ".." / "models" / "paddleocr").resolve()
 DET_MODEL_DIR = Path(os.getenv("PADDLE_DET_MODEL_DIR", MODELS_DIR / "PP-OCRv5_server_det"))
 REC_MODEL_DIR = Path(os.getenv("PADDLE_REC_MODEL_DIR", MODELS_DIR / "en_PP-OCRv5_mobile_rec"))
 TEXTLINE_ORI_MODEL_DIR = Path(os.getenv("PADDLE_TEXTLINE_ORI_MODEL_DIR", MODELS_DIR / "PP-LCNet_x1_0_textline_ori"))
+DOC_ORI_MODEL_DIR = Path(
+    os.getenv("PADDLE_DOC_ORI_MODEL_DIR", MODELS_DIR / "PP-LCNet_x1_0_doc_ori")
+)
+DOC_UNWARP_MODEL_DIR = Path(os.getenv("PADDLE_DOC_UNWARP_MODEL_DIR", MODELS_DIR / "UVDoc"))
 
 
 def _build_ocr() -> PaddleOCR:
@@ -43,6 +47,10 @@ def _build_ocr() -> PaddleOCR:
         kwargs["text_recognition_model_dir"] = str(REC_MODEL_DIR)
     if TEXTLINE_ORI_MODEL_DIR.exists():
         kwargs["textline_orientation_model_dir"] = str(TEXTLINE_ORI_MODEL_DIR)
+    if DOC_ORI_MODEL_DIR.exists():
+        kwargs["doc_orientation_classify_model_dir"] = str(DOC_ORI_MODEL_DIR)
+    if DOC_UNWARP_MODEL_DIR.exists():
+        kwargs["doc_unwarping_model_dir"] = str(DOC_UNWARP_MODEL_DIR)
 
     return PaddleOCR(**kwargs)
 
