@@ -1,0 +1,625 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>FastService Admin</title>
+  <style>
+    * { box-sizing: border-box; }
+    body { margin:0; font-family: Segoe UI, Arial, sans-serif; background:#f3f6fb; color:#1a2432; }
+    .wrap { max-width: 1300px; margin: 0 auto; padding: 16px; }
+    h1 { margin: 0 0 10px; }
+    .tabs-row { display:flex; gap:8px; margin-bottom: 8px; align-items: center; justify-content: space-between; flex-wrap: wrap; }
+    .tabs { display:flex; gap:8px; flex-wrap: wrap; }
+    .tabs button { border:1px solid #cfd9e7; background:#fff; border-radius:8px; padding:8px 12px; cursor:pointer; }
+    .tabs button.active { background:#0f62c9; color:#fff; border-color:#0f62c9; }
+    .tabs-tools button { border:1px solid #cfd9e7; background:#fff; border-radius:8px; padding:8px 12px; cursor:pointer; color:#2f3f56; }
+    .tabs-config { margin-bottom: 12px; background:#fff; border:1px solid #d8e0ed; border-radius:8px; padding:8px 10px; display:flex; gap:12px; flex-wrap:wrap; align-items:center; }
+    .tabs-config.hidden { display:none; }
+    .tabs-config label { display:flex; align-items:center; gap:6px; font-size:13px; color:#3b4f68; }
+    .panel { display:none; background:#fff; border:1px solid #d8e0ed; border-radius:10px; padding:12px; }
+    .panel.active { display:block; }
+    .grid { display:grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap:10px; }
+    .grid > div { min-width:0; }
+    .service-grid { grid-template-columns: repeat(3, minmax(160px, 1fr)); }
+    .logs-grid { grid-template-columns: minmax(180px, 1fr) minmax(120px, 180px) minmax(180px, 240px); }
+    .testing-grid { grid-template-columns: minmax(320px, 2fr) minmax(160px, 1fr) minmax(160px, 1fr); }
+    .inline-toggle { display:flex; align-items:flex-end; }
+    .inline-toggle label { display:flex; align-items:center; gap:6px; white-space:nowrap; }
+    label { font-size:12px; color:#56657a; }
+    input, select, button { font:inherit; }
+    input, select { width:100%; max-width:100%; border:1px solid #cfd9e7; border-radius:8px; padding:8px; }
+    input[type="file"] { width:100%; max-width:100%; min-width:0; }
+    .actions { margin-top:10px; display:flex; gap:8px; flex-wrap: wrap; }
+    .actions button { border:0; background:#116d5f; color:#fff; border-radius:8px; padding:8px 12px; cursor:pointer; }
+    .actions button.alt { background:#1e4f9b; }
+    .actions button.warn { background:#8b4f11; }
+    .actions button:disabled { background:#c7cfdd; color:#edf1f8; cursor:not-allowed; opacity:0.9; }
+    .mini-btn { border:0; color:#fff; border-radius:6px; padding:4px 8px; cursor:pointer; font-size:12px; margin-right:4px; }
+    .mini-btn.alt { background:#1e4f9b; }
+    .mini-btn.warn { background:#8b4f11; }
+    .status { margin-top:8px; font-size:13px; color:#435469; white-space:pre-wrap; }
+    pre { background:#0f1722; color:#d7e4f5; border-radius:8px; padding:10px; max-height:480px; overflow:auto; }
+    table { width:100%; border-collapse: collapse; margin-top:8px; }
+    th, td { border:1px solid #dce4ef; padding:6px; font-size:12px; text-align:left; }
+    th { background:#eef3fb; position: sticky; top: 0; }
+    .table-wrap { max-height:430px; overflow:auto; border:1px solid #dce4ef; border-radius:8px; }
+    .img-wrap { margin-top:8px; }
+    .img-wrap img { max-width:100%; border:1px solid #dce4ef; border-radius:8px; display:none; }
+    .img-placeholder { border:1px dashed #d0d9e8; border-radius:8px; background:#f8faff; color:#607086; padding:16px; font-size:13px; }
+    .about-box { border:1px solid #d8e0ed; border-radius:10px; background:#fff; padding:12px; color:#34455c; line-height:1.4; }
+    @media (max-width: 1100px) {
+      .service-grid, .logs-grid, .testing-grid { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <h1>FastService Admin UI</h1>
+    <div class="tabs-row">
+      <div class="tabs">
+        <button class="tab-btn active" data-tab="service">Service</button>
+        <button class="tab-btn" data-tab="logs">Logs</button>
+        <button class="tab-btn" data-tab="debug">Debug</button>
+        <button class="tab-btn" data-tab="testing">Testing</button>
+        <button class="tab-btn" data-tab="about">About</button>
+      </div>
+      <div class="tabs-tools">
+        <button id="toggle_tab_settings" type="button">Tab Visibility</button>
+      </div>
+    </div>
+    <div id="tab_settings" class="tabs-config hidden">
+      <span style="font-size:12px;color:#56657a;">Show tabs:</span>
+      <label><input type="checkbox" data-tab-toggle="service" checked /> Service</label>
+      <label><input type="checkbox" data-tab-toggle="logs" checked /> Logs</label>
+      <label><input type="checkbox" data-tab-toggle="debug" checked /> Debug</label>
+      <label><input type="checkbox" data-tab-toggle="testing" checked /> Testing</label>
+      <label><input type="checkbox" data-tab-toggle="about" checked /> About</label>
+    </div>
+
+    <section id="tab-service" class="panel active">
+      <div class="grid service-grid">
+        <div><label>Host</label><input id="cfg_host" /></div>
+        <div><label>Port</label><input id="cfg_port" type="number" /></div>
+        <div><label>Workers</label><input id="cfg_workers" type="number" min="1" max="16" /></div>
+      </div>
+      <div style="margin-top:8px">
+        <label><input id="cfg_debug" type="checkbox" style="width:auto"/> Enable debug visualization</label>
+      </div>
+      <div class="actions">
+        <button onclick="saveConfig()">Save Config</button>
+        <button class="alt" onclick="startService()">Start Service</button>
+        <button class="alt" onclick="stopService()">Stop Service</button>
+        <button class="warn" onclick="restartService()">Restart Service</button>
+        <button class="alt" onclick="applyWorkers()">Apply Workers</button>
+        <button class="warn" onclick="reloadModels()">Reload Models</button>
+        <button onclick="refreshStatus()">Refresh Status</button>
+      </div>
+      <div id="service_status" class="status"></div>
+    </section>
+
+    <section id="tab-logs" class="panel">
+      <div class="grid logs-grid">
+        <div>
+          <label>Source</label>
+          <select id="logs_source">
+            <option value="app">app.log</option>
+            <option value="stdout">service stdout</option>
+            <option value="all">all</option>
+          </select>
+        </div>
+        <div><label>Lines</label><input id="logs_lines" type="number" value="300" /></div>
+        <div class="inline-toggle"><label><input id="logs_auto" type="checkbox" style="width:auto" checked/> auto refresh</label></div>
+      </div>
+      <div class="actions"><button onclick="loadLogs()">Refresh Logs</button></div>
+      <pre id="logs_view"></pre>
+    </section>
+
+    <section id="tab-debug" class="panel">
+      <div class="actions">
+        <button onclick="refreshDebug()">Refresh Debug Image</button>
+        <button class="alt" onclick="loadRecognized()">Refresh Recognized Table</button>
+      </div>
+      <div id="debug_meta" class="status"></div>
+      <div class="img-wrap">
+        <div id="debug_img_placeholder" class="img-placeholder">No debug image yet.</div>
+        <img id="debug_img" alt="debug image"/>
+      </div>
+      <h3>All Recognized Numbers</h3>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>ID</th><th>Time</th><th>Endpoint</th><th>File</th><th>Raw</th><th>Normalized</th><th>Status</th><th>Latency ms</th></tr></thead>
+          <tbody id="recognized_body"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <section id="tab-testing" class="panel">
+      <div class="grid testing-grid">
+        <div>
+          <label>Dataset Folder</label>
+          <input id="test_folder" type="file" webkitdirectory directory multiple />
+          <div id="test_folder_info" class="status"></div>
+        </div>
+        <div>
+          <label>Mode</label>
+          <select id="test_mode">
+            <option value="container">container</option>
+            <option value="seal">seal</option>
+          </select>
+        </div>
+        <div><label>Timeout (sec)</label><input id="test_timeout" type="number" value="120" min="1" max="1800"/></div>
+      </div>
+      <div class="actions">
+        <button id="run_test_btn" onclick="runTest()">Run Test</button>
+        <button id="download_report_btn" class="warn" onclick="downloadLastReport()" disabled>Download Report (disabled)</button>
+        <button class="alt" onclick="loadTestRuns()">Load Previous Runs</button>
+        <button class="warn" onclick="cleanupReports('policy')">Cleanup Reports (Policy)</button>
+        <button class="warn" onclick="cleanupReports('all')">Cleanup Reports (All)</button>
+      </div>
+      <div id="test_summary" class="status"></div>
+      <div id="test_cleanup_status" class="status"></div>
+      <h3>Last Run Items</h3>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>File</th><th>Predicted</th><th>Expected Label</th><th>Expected Text</th><th>Status</th><th>Latency ms</th><th>Error</th></tr></thead>
+          <tbody id="test_items_body"></tbody>
+        </table>
+      </div>
+      <h3>Recent Runs</h3>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>ID</th><th>Time</th><th>Dataset</th><th>Mode</th><th>Total</th><th>OK</th><th>Label acc</th><th>Text acc</th><th>Report</th><th>Actions</th></tr></thead>
+          <tbody id="test_runs_body"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <section id="tab-about" class="panel">
+      <div class="about-box">
+        <strong>FastService Admin UI</strong><br/>
+        Web-админка для управления сервисом распознавания, просмотра логов, debug-данных и запуска тестовых прогонов датасетов с сохранением истории и HTML-отчетов.
+      </div>
+    </section>
+  </div>
+
+<script>
+const qs = (s) => document.querySelector(s);
+const TAB_VISIBILITY_KEY = 'admin_ui_tab_visibility_v1';
+const TAB_ORDER = ['service', 'logs', 'debug', 'testing', 'about'];
+const SERVER_VISIBLE_TABS = Array.isArray(__ADMIN_UI_VISIBLE_TABS_JSON__) ? __ADMIN_UI_VISIBLE_TABS_JSON__ : TAB_ORDER;
+const ALLOWED_TABS = TAB_ORDER.filter((tab) => SERVER_VISIBLE_TABS.includes(tab));
+let testFolderFiles = [];
+let isTestRunning = false;
+let lastRunId = null;
+let tabVisibility = Object.fromEntries(TAB_ORDER.map((tab) => [tab, ALLOWED_TABS.includes(tab)]));
+
+function activateTab(tabName) {
+  const btn = qs(`.tab-btn[data-tab="${tabName}"]`);
+  const panel = qs(`#tab-${tabName}`);
+  if (!btn || !panel || btn.style.display === 'none') return;
+  for (const x of document.querySelectorAll('.tab-btn')) x.classList.remove('active');
+  for (const p of document.querySelectorAll('.panel')) p.classList.remove('active');
+  btn.classList.add('active');
+  panel.classList.add('active');
+}
+
+function loadTabVisibility() {
+  try {
+    const raw = localStorage.getItem(TAB_VISIBILITY_KEY);
+    if (!raw) return;
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== 'object') return;
+    for (const tab of TAB_ORDER) {
+      if (!ALLOWED_TABS.includes(tab)) {
+        tabVisibility[tab] = false;
+        continue;
+      }
+      if (typeof parsed[tab] === 'boolean') tabVisibility[tab] = parsed[tab];
+    }
+  } catch (_) {}
+}
+
+function saveTabVisibility() {
+  localStorage.setItem(TAB_VISIBILITY_KEY, JSON.stringify(tabVisibility));
+}
+
+function ensureAtLeastOneVisibleTab() {
+  if (ALLOWED_TABS.some((tab) => tabVisibility[tab])) return;
+  tabVisibility[ALLOWED_TABS[0] || 'service'] = true;
+}
+
+function applyTabVisibility() {
+  ensureAtLeastOneVisibleTab();
+  for (const tab of TAB_ORDER) {
+    const btn = qs(`.tab-btn[data-tab="${tab}"]`);
+    const panel = qs(`#tab-${tab}`);
+    if (!btn || !panel) continue;
+    const visible = ALLOWED_TABS.includes(tab) && !!tabVisibility[tab];
+    btn.style.display = visible ? '' : 'none';
+    if (!visible) panel.classList.remove('active');
+  }
+  const activeBtn = qs('.tab-btn.active');
+  if (!activeBtn || activeBtn.style.display === 'none') {
+    const firstVisible = ALLOWED_TABS.find((tab) => tabVisibility[tab]) || ALLOWED_TABS[0] || 'service';
+    activateTab(firstVisible);
+  }
+}
+
+function initTabSettings() {
+  loadTabVisibility();
+  for (const cb of document.querySelectorAll('[data-tab-toggle]')) {
+    const tab = cb.getAttribute('data-tab-toggle');
+    if (!ALLOWED_TABS.includes(tab)) {
+      tabVisibility[tab] = false;
+      cb.checked = false;
+      cb.disabled = true;
+      const row = cb.closest('label');
+      if (row) row.style.display = 'none';
+      continue;
+    }
+    cb.checked = !!tabVisibility[tab];
+    cb.addEventListener('change', () => {
+      tabVisibility[tab] = cb.checked;
+      ensureAtLeastOneVisibleTab();
+      cb.checked = !!tabVisibility[tab];
+      for (const x of document.querySelectorAll('[data-tab-toggle]')) {
+        const t = x.getAttribute('data-tab-toggle');
+        x.checked = !!tabVisibility[t];
+      }
+      saveTabVisibility();
+      applyTabVisibility();
+    });
+  }
+  const toggleBtn = qs('#toggle_tab_settings');
+  const panel = qs('#tab_settings');
+  if (toggleBtn && panel) {
+    if (ALLOWED_TABS.length <= 1) {
+      toggleBtn.style.display = 'none';
+      panel.classList.add('hidden');
+    } else {
+      toggleBtn.addEventListener('click', () => panel.classList.toggle('hidden'));
+    }
+  }
+  for (const b of document.querySelectorAll('.tab-btn')) {
+    b.addEventListener('click', () => activateTab(b.dataset.tab));
+  }
+  applyTabVisibility();
+}
+
+async function api(url, opts={}) {
+  const r = await fetch(url, opts);
+  const t = await r.text();
+  let data = {};
+  try { data = t ? JSON.parse(t) : {}; } catch { data = {raw:t}; }
+  if (!r.ok) throw new Error((data.detail && JSON.stringify(data.detail)) || data.raw || ('HTTP ' + r.status));
+  return data;
+}
+
+function setStatus(id, text) { qs(id).textContent = text || ''; }
+
+function isDebugImageHiddenBySetting() {
+  return !!(qs('#cfg_debug') && qs('#cfg_debug').checked);
+}
+
+function setDownloadReportState(enabled) {
+  const btn = qs('#download_report_btn');
+  btn.disabled = !enabled;
+  btn.textContent = enabled ? 'Download Report' : 'Download Report (disabled)';
+}
+
+async function loadConfig() {
+  const d = await api('/api/service/config');
+  const c = d.config;
+  qs('#cfg_host').value = c.host;
+  qs('#cfg_port').value = c.port;
+  qs('#cfg_workers').value = c.workers;
+  qs('#cfg_debug').checked = !!c.debug_visualization;
+  if (isDebugImageHiddenBySetting()) {
+    showDebugPlaceholder('Debug image is hidden while "Enable debug visualization" is ON.');
+  }
+}
+
+async function saveConfig() {
+  const payload = {
+    host: qs('#cfg_host').value.trim(),
+    port: Number(qs('#cfg_port').value),
+    workers: Number(qs('#cfg_workers').value),
+    debug_visualization: qs('#cfg_debug').checked,
+  };
+  await api('/api/service/config', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload)});
+  await api('/api/debug/config', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({enabled: payload.debug_visualization})});
+  await refreshStatus();
+  if (payload.debug_visualization) {
+    showDebugPlaceholder('Debug image is hidden while "Enable debug visualization" is ON.');
+  } else {
+    refreshDebug().catch(() => {});
+  }
+}
+
+async function refreshStatus() {
+  const d = await api('/api/service/status');
+  setStatus('#service_status', JSON.stringify(d, null, 2));
+}
+
+async function startService(){ await api('/api/service/start', {method:'POST'}); await refreshStatus(); }
+async function stopService(){ await api('/api/service/stop', {method:'POST'}); await refreshStatus(); }
+async function restartService(){ await api('/api/service/restart', {method:'POST'}); await refreshStatus(); }
+async function applyWorkers(){
+  await api('/api/service/workers', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({workers: Number(qs('#cfg_workers').value)})});
+  await refreshStatus();
+}
+async function reloadModels(){
+  const d = await api('/api/models/reload', {method:'POST'});
+  setStatus('#service_status', 'Models reloaded:\n' + JSON.stringify(d, null, 2));
+}
+
+async function loadLogs() {
+  const src = qs('#logs_source').value;
+  const lines = Number(qs('#logs_lines').value || 300);
+  const d = await api(`/api/logs?source=${encodeURIComponent(src)}&lines=${lines}`);
+  qs('#logs_view').textContent = d.text || '';
+}
+
+function showDebugPlaceholder(text) {
+  const img = qs('#debug_img');
+  const placeholder = qs('#debug_img_placeholder');
+  img.style.display = 'none';
+  img.removeAttribute('src');
+  placeholder.style.display = 'block';
+  placeholder.textContent = text || 'No debug image yet.';
+}
+
+async function refreshDebug() {
+  const m = await api('/api/debug/meta');
+  setStatus('#debug_meta', JSON.stringify(m, null, 2));
+  if (isDebugImageHiddenBySetting()) {
+    showDebugPlaceholder('Debug image is hidden while "Enable debug visualization" is ON.');
+    return;
+  }
+  if (!m.available) {
+    showDebugPlaceholder('No debug image yet.');
+    return;
+  }
+  const img = qs('#debug_img');
+  const placeholder = qs('#debug_img_placeholder');
+  img.onload = () => {
+    placeholder.style.display = 'none';
+    img.style.display = 'block';
+  };
+  img.onerror = () => {
+    showDebugPlaceholder('Debug image is unavailable.');
+  };
+  placeholder.style.display = 'block';
+  placeholder.textContent = 'Loading debug image...';
+  img.style.display = 'none';
+  img.src = '/api/debug/image?ts=' + Date.now();
+}
+
+async function loadRecognized() {
+  const d = await api('/api/recognized?limit=500');
+  const body = qs('#recognized_body');
+  const rows = d.items || [];
+  if (!rows.length) { body.innerHTML = '<tr><td colspan="8">No data</td></tr>'; return; }
+  body.innerHTML = rows.map(r => `<tr>
+    <td>${r.id}</td><td>${r.created_at || ''}</td><td>${r.endpoint || ''}</td><td>${r.filename || ''}</td>
+    <td>${r.raw_text || ''}</td><td>${r.normalized_text || ''}</td><td>${r.status || ''}</td><td>${r.elapsed_ms ? Number(r.elapsed_ms).toFixed(2) : ''}</td>
+  </tr>`).join('');
+}
+
+async function runTest() {
+  if (isTestRunning) return;
+  if (!testFolderFiles.length) {
+    setStatus('#test_summary', 'Select a folder first');
+    return;
+  }
+  lastRunId = null;
+  setDownloadReportState(false);
+  isTestRunning = true;
+  const runBtn = qs('#run_test_btn');
+  const originalText = runBtn.textContent;
+  runBtn.disabled = true;
+  runBtn.textContent = 'Running...';
+  qs('#test_folder').disabled = true;
+  qs('#test_mode').disabled = true;
+  qs('#test_timeout').disabled = true;
+  setStatus('#test_summary', 'Request is being processed...');
+
+  const fd = new FormData();
+  fd.append('mode', qs('#test_mode').value);
+  fd.append('timeout_sec', String(Number(qs('#test_timeout').value || 120)));
+  for (const f of testFolderFiles) {
+    const rel = f.webkitRelativePath || f.name;
+    fd.append('files', f, rel);
+  }
+  try {
+    const d = await api('/api/testing/run-files', {method:'POST', body: fd});
+    lastRunId = d.run_id || null;
+    setDownloadReportState(!!lastRunId);
+    setStatus('#test_summary', JSON.stringify(d.summary, null, 2));
+    renderTestItems(d.items || []);
+    await loadTestRuns();
+  } catch (e) {
+    setDownloadReportState(false);
+    setStatus('#test_summary', String(e));
+  } finally {
+    isTestRunning = false;
+    runBtn.disabled = false;
+    runBtn.textContent = originalText;
+    qs('#test_folder').disabled = false;
+    qs('#test_mode').disabled = false;
+    qs('#test_timeout').disabled = false;
+  }
+}
+
+function filenameFromDisposition(disposition, fallback) {
+  if (!disposition) return fallback;
+  const utf = disposition.match(/filename\*=UTF-8''([^;]+)/i);
+  if (utf && utf[1]) return decodeURIComponent(utf[1]);
+  const ascii = disposition.match(/filename=\"?([^\";]+)\"?/i);
+  return (ascii && ascii[1]) ? ascii[1] : fallback;
+}
+
+function esc(value) {
+  return String(value ?? '')
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+    .replaceAll('"', '&quot;')
+    .replaceAll("'", '&#39;');
+}
+
+async function downloadReport(runId) {
+  const resp = await fetch(`/api/testing/runs/${runId}/report/download`);
+  if (!resp.ok) {
+    const errText = await resp.text();
+    throw new Error(errText || ('HTTP ' + resp.status));
+  }
+  const blob = await resp.blob();
+  const disposition = resp.headers.get('content-disposition') || '';
+  const filename = filenameFromDisposition(disposition, `testing_report_run_${runId}.html`);
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+  return filename;
+}
+
+async function downloadLastReport() {
+  if (!lastRunId) {
+    setStatus('#test_summary', 'Run test first, then download report.');
+    return;
+  }
+  const btn = qs('#download_report_btn');
+  const originalText = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = 'Preparing report...';
+  try {
+    const filename = await downloadReport(lastRunId);
+    setStatus('#test_summary', `Report downloaded: ${filename}`);
+    await loadTestRuns();
+  } catch (e) {
+    setStatus('#test_summary', String(e));
+  } finally {
+    btn.textContent = originalText;
+    setDownloadReportState(!!lastRunId);
+  }
+}
+
+function openRunReport(runId) {
+  window.open(`/api/testing/runs/${runId}/report/view`, '_blank', 'noopener,noreferrer');
+}
+
+async function downloadRunReport(runId) {
+  try {
+    const filename = await downloadReport(runId);
+    setStatus('#test_summary', `Report downloaded: ${filename}`);
+    await loadTestRuns();
+  } catch (e) {
+    setStatus('#test_summary', String(e));
+  }
+}
+
+async function cleanupReports(mode) {
+  if (mode === 'all') {
+    const ok = window.confirm('Delete ALL saved HTML reports?');
+    if (!ok) return;
+  }
+  try {
+    const d = await api('/api/testing/reports/cleanup', {
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({mode, dry_run:false})
+    });
+    setStatus('#test_cleanup_status', JSON.stringify(d.result || d, null, 2));
+    await loadTestRuns();
+  } catch (e) {
+    setStatus('#test_cleanup_status', String(e));
+  }
+}
+
+function renderTestItems(items) {
+  const body = qs('#test_items_body');
+  if (!items.length) { body.innerHTML = '<tr><td colspan="7">No data</td></tr>'; return; }
+  body.innerHTML = items.map(it => `<tr>
+    <td>${esc(it.file_name || '')}</td><td>${esc(it.predicted_text || '')}</td><td>${esc(it.expected_label || '')}</td><td>${esc(it.expected_text || '')}</td>
+    <td>${esc(it.status_code || '')}</td><td>${esc(it.elapsed_ms || '')}</td><td>${esc(it.error || '')}</td>
+  </tr>`).join('');
+}
+
+async function loadTestRuns() {
+  const d = await api('/api/testing/runs?limit=30');
+  const body = qs('#test_runs_body');
+  const rows = d.runs || [];
+  if (!rows.length) { body.innerHTML = '<tr><td colspan="10">No runs</td></tr>'; return; }
+  body.innerHTML = rows.map(r => {
+    const s = r.summary || {};
+    const reportText = r.has_report ? 'saved' : 'not generated';
+    const actions = [
+      `<button type="button" class="mini-btn alt" onclick="openRunReport(${Number(r.id)})">View</button>`,
+      `<button type="button" class="mini-btn warn" onclick="downloadRunReport(${Number(r.id)})">Download</button>`,
+    ].join(' ');
+    return `<tr>
+      <td>${esc(r.id)}</td><td>${esc(r.created_at || '')}</td><td>${esc(r.dataset_dir || '')}</td><td>${esc(r.mode || '')}</td>
+      <td>${esc(s.total_images ?? '')}</td><td>${esc(s.ok_requests ?? '')}</td>
+      <td>${s.label_accuracy == null ? 'N/A' : (s.label_accuracy*100).toFixed(2)+'%'}</td>
+      <td>${s.text_accuracy == null ? 'N/A' : (s.text_accuracy*100).toFixed(2)+'%'}</td>
+      <td>${reportText}</td>
+      <td>${actions}</td>
+    </tr>`;
+  }).join('');
+}
+
+async function loadCleanupConfig() {
+  try {
+    const d = await api('/api/testing/reports/cleanup/config');
+    setStatus('#test_cleanup_status', 'Cleanup policy:\n' + JSON.stringify(d.config || {}, null, 2));
+  } catch (e) {
+    setStatus('#test_cleanup_status', 'Cleanup policy unavailable: ' + String(e));
+  }
+}
+
+setInterval(() => { if (qs('#logs_auto').checked) loadLogs().catch(() => {}); }, 3000);
+
+qs('#cfg_debug').addEventListener('change', () => {
+  if (isDebugImageHiddenBySetting()) {
+    showDebugPlaceholder('Debug image is hidden while "Enable debug visualization" is ON.');
+  } else {
+    refreshDebug().catch(() => {});
+  }
+});
+
+qs('#test_folder').addEventListener('change', (e) => {
+  testFolderFiles = Array.from(e.target.files || []);
+  if (!testFolderFiles.length) {
+    setStatus('#test_folder_info', 'No folder selected');
+    return;
+  }
+  const sample = testFolderFiles[0].webkitRelativePath || testFolderFiles[0].name;
+  const root = sample.split('/')[0];
+  setStatus('#test_folder_info', `Selected: ${root}, files: ${testFolderFiles.length}`);
+});
+
+(async () => {
+  try {
+    initTabSettings();
+    showDebugPlaceholder('No debug image yet.');
+    setDownloadReportState(false);
+    await loadConfig();
+    await refreshStatus();
+    await loadLogs();
+    await refreshDebug();
+    await loadRecognized();
+    await loadCleanupConfig();
+    await loadTestRuns();
+  } catch (e) {
+    setStatus('#service_status', String(e));
+  }
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,48 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# Build / packaging
+build/
+dist/
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# IDE / OS
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Local runtime data
+dashboard_data/*.db
+dashboard_data/*.log
+dashboard_data/last_debug.jpg
+dashboard_data/last_debug.json
+dashboard_data/test_reports/
+dashboard_data/digit_debug/
+dashboard_data/vertical_debug/
+dashboard_data/vertical_debug2/
+dashboard_data/vertical_debug3/
+dashboard_data/two_lines_debug/
+dashboard_data/two_lines_debug2/
+dashboard_data/two_lines_debug3/
+
+# Downloaded / local models
+models/
+
+# Local config directories
+app/config/
+

@@ -1,0 +1,12 @@
+{
+  "use_crop_service": true,
+  "max_crops_per_image": 8,
+  "stop_on_first_valid": true,
+  "accept_non_iso_result": false,
+  "save_debug_on_not_found": true,
+  "enable_resize_digit_pass": true,
+  "enable_two_lines_hard_fallback": false,
+  "layout_twolines_max_ratio": 3.0,
+  "layout_oneline_min_ratio": 3.0,
+  "layout_split_door_min_height": 420
+}

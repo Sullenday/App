@@ -1,0 +1,17 @@
+fastapi
+uvicorn[standard]
+gunicorn
+python-multipart
+paddleocr
+opencv-python-headless
+numpy
+matplotlib
+mpmath
+networkx
+pillow
+polars
+psutil
+PyYAML
+ultralytics
+ultralytics-thop
+requests
