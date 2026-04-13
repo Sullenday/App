@@ -465,6 +465,20 @@ def _extract_raw_text(response_obj: Any, fallback_text: str) -> str:
     return _extract_result_text(response_obj, fallback_text)
 
 
+def _extract_failure_reason(response_obj: Any) -> str:
+    if not isinstance(response_obj, dict):
+        return ""
+    failure_reason = response_obj.get("failure_reason")
+    if isinstance(failure_reason, str) and failure_reason.strip():
+        return failure_reason.strip()
+    ocr_debug = response_obj.get("ocr_debug")
+    if isinstance(ocr_debug, dict):
+        reason = ocr_debug.get("reason")
+        if isinstance(reason, str) and reason.strip() and reason.strip() != "ok":
+            return reason.strip()
+    return ""
+
+
 def _extract_stage_timings(response_obj: Any) -> dict[str, float]:
     if not isinstance(response_obj, dict):
         return {}
@@ -1226,6 +1240,10 @@ def _run_dataset_test(payload: TestRunPayload) -> dict[str, Any]:
             normalized_predicted = _normalize_text(predicted)
             if not resp.ok:
                 error = f"HTTP {resp.status_code}"
+            elif normalized_predicted in {"", "NOTFOUND"}:
+                failure_reason = _extract_failure_reason(obj)
+                if failure_reason:
+                    error = failure_reason
         except requests.RequestException as exc:
             elapsed_ms = (time.perf_counter() - start) * 1000.0
             error = _format_request_error(exc, payload.timeout_sec)
@@ -1485,6 +1503,10 @@ async def run_testing_files(
             normalized_predicted = _normalize_text(predicted)
             if not resp.ok:
                 error = f"HTTP {resp.status_code}"
+            elif normalized_predicted in {"", "NOTFOUND"}:
+                failure_reason = _extract_failure_reason(obj)
+                if failure_reason:
+                    error = failure_reason
         except requests.RequestException as exc:
             elapsed_ms = (time.perf_counter() - start) * 1000.0
             error = _format_request_error(exc, timeout_sec)

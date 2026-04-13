@@ -1,5 +1,6 @@
 import hashlib
 import json
+import logging
 import os
 import re
 import shutil
@@ -53,6 +54,8 @@ import numpy as np
 from paddleocr import PaddleOCR
 
 from .container_layout import classify_container_layout, extract_split_door_rois, extract_two_line_rois, foreground_mask, merge_bands
+
+logger = logging.getLogger("container_ocr")
 
 EARLY_OK = float(os.getenv("OCR_EARLY_OK", "0.93"))
 CACHE_SIZE = int(os.getenv("OCR_CACHE_SIZE", "256"))
@@ -137,7 +140,7 @@ _CLEAN_RE = re.compile(r"[^A-Z0-9]+")
 _CONTAINER_RE = re.compile(r"[A-Z]{4}\d{7}")
 _CONTAINER10_RE = re.compile(r"[A-Z]{4}\d{6}")
 _DIGIT_CHUNK_RE = re.compile(r"\d+")
-_CACHE: "OrderedDict[str, tuple[str, float, bool]]" = OrderedDict()
+_CACHE: "OrderedDict[str, tuple[str, float, bool, dict[str, Any]]]" = OrderedDict()
 
 _TO_LETTER = {
     "0": "O",
@@ -420,6 +423,18 @@ def _extract_text_pairs(result) -> list[tuple[str, float]]:
             continue
         pairs.append((text, float(line[1][1])))
     return pairs
+
+
+def _text_pair_preview(text_pairs: list[tuple[str, float]], *, limit: int = 8) -> list[dict[str, Any]]:
+    preview: list[dict[str, Any]] = []
+    for text, score in text_pairs[:limit]:
+        preview.append(
+            {
+                "text": str(text),
+                "score": round(float(score), 4),
+            }
+        )
+    return preview
 
 
 def _candidate_groups(text_pairs: list[tuple[str, float]]) -> list[tuple[str, float]]:
@@ -2600,17 +2615,28 @@ def _read_right_check_digit(img) -> tuple[str, float]:
     return max(digit_totals.items(), key=lambda item: item[1])
 
 
-def _best_container_from_result(result) -> tuple[str, float, bool]:
+def _best_container_from_result(result) -> tuple[str, float, bool, dict[str, Any]]:
     text_pairs = _extract_text_pairs(result)
+    debug: dict[str, Any] = {
+        "text_pair_count": len(text_pairs),
+        "text_pairs": _text_pair_preview(text_pairs),
+    }
     if not text_pairs:
-        return "", -1.0, False
+        debug["reason"] = "ocr_no_text_pairs"
+        return "", -1.0, False, debug
 
     best_code = ""
     best_final = -1.0
     best_valid = False
+    candidate_groups = _candidate_groups(text_pairs)
+    debug["candidate_group_count"] = len(candidate_groups)
+    debug["candidate_groups"] = [raw for raw, _score in candidate_groups[:8]]
+    normalized_hits: list[str] = []
 
-    for raw_candidate, raw_score in _candidate_groups(text_pairs):
+    for raw_candidate, raw_score in candidate_groups:
         for normalized in _normalized_candidates(raw_candidate):
+            if normalized not in normalized_hits and len(normalized_hits) < 8:
+                normalized_hits.append(normalized)
             quality = _container_text_quality(normalized)
             final = 0.75 * float(raw_score) + 0.25 * quality
             is_valid = _is_valid_iso6346(normalized)
@@ -2621,10 +2647,19 @@ def _best_container_from_result(result) -> tuple[str, float, bool]:
                 best_final = final
                 best_valid = is_valid
 
-    return best_code, best_final, best_valid
+    debug["normalized_candidate_count"] = len(normalized_hits)
+    debug["normalized_candidates"] = normalized_hits
+    if best_code:
+        debug["reason"] = "ok"
+        debug["best_code"] = best_code
+        debug["best_score"] = round(float(best_final), 4)
+        debug["best_valid"] = bool(best_valid)
+    else:
+        debug["reason"] = "ocr_text_pairs_no_container_candidate"
+    return best_code, best_final, best_valid, debug
 
 
-def _predict_image(img) -> tuple[str, float, bool]:
+def _predict_image(img) -> tuple[str, float, bool, dict[str, Any]]:
     result = _run_ocr(img)
     return _best_container_from_result(result)
 
@@ -2650,37 +2685,72 @@ def _cache_set(key: str, value):
         _CACHE.popitem(last=False)
 
 
-def ocr_container_best(img):
+def ocr_container_best_details(img) -> dict[str, Any]:
     if img is None:
-        return "", -1.0, False
+        return {
+            "text": "",
+            "score": -1.0,
+            "is_valid": False,
+            "ocr_debug": {"reason": "image_none"},
+        }
 
     key = _cache_key(img)
     cached = _cache_get(key)
     if cached is not None:
-        return cached
+        text, score, is_valid, ocr_debug = cached
+        return {
+            "text": text,
+            "score": score,
+            "is_valid": is_valid,
+            "ocr_debug": dict(ocr_debug),
+        }
 
     best_text = ""
     best_score = -1.0
     best_valid = False
+    best_debug: dict[str, Any] = {"reason": "uninitialized"}
 
     img_fast = _preprocess_fast(img)
-    text, score, is_valid = _predict_image(img_fast)
+    text, score, is_valid, ocr_debug = _predict_image(img_fast)
+    ocr_debug = dict(ocr_debug)
+    ocr_debug["variant"] = "fast"
     if score > best_score:
-        best_text, best_score, best_valid = text, score, is_valid
+        best_text, best_score, best_valid, best_debug = text, score, is_valid, ocr_debug
 
     if best_valid and best_score >= EARLY_OK:
-        result = (best_text, best_score, best_valid)
+        result = (best_text, best_score, best_valid, best_debug)
         _cache_set(key, result)
-        return result
+        return {
+            "text": best_text,
+            "score": best_score,
+            "is_valid": best_valid,
+            "ocr_debug": dict(best_debug),
+        }
 
     img_hard = _preprocess_hard(img)
-    text, score, is_valid = _predict_image(img_hard)
+    text, score, is_valid, ocr_debug = _predict_image(img_hard)
+    ocr_debug = dict(ocr_debug)
+    ocr_debug["variant"] = "hard"
     if score > best_score:
-        best_text, best_score, best_valid = text, score, is_valid
+        best_text, best_score, best_valid, best_debug = text, score, is_valid, ocr_debug
 
-    result = (best_text, best_score, best_valid)
+    result = (best_text, best_score, best_valid, best_debug)
     _cache_set(key, result)
-    return result
+    return {
+        "text": best_text,
+        "score": best_score,
+        "is_valid": best_valid,
+        "ocr_debug": dict(best_debug),
+    }
+
+
+def ocr_container_best(img):
+    details = ocr_container_best_details(img)
+    return (
+        str(details.get("text") or ""),
+        float(details.get("score") or -1.0),
+        bool(details.get("is_valid")),
+    )
 
 
 def _ocr_container_from_crop_generic(img) -> dict[str, Any]:

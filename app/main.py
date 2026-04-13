@@ -26,6 +26,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DATA_DIR = PROJECT_ROOT / "dashboard_data"
 HISTORY_DB_PATH = DATA_DIR / "recognitions.db"
 DEBUG_IMAGE_PATH = DATA_DIR / "last_debug.jpg"
+DEBUG_CROP_IMAGE_PATH = DATA_DIR / "last_debug_crop.jpg"
 DEBUG_META_PATH = DATA_DIR / "last_debug.json"
 CONTAINER_CONFIG_PATH = Path(os.getenv("CONTAINER_CONFIG_PATH", PROJECT_ROOT / "app" / "container_recognition_config.json"))
 
@@ -171,10 +172,12 @@ def _record_recognition(
 def _save_debug_snapshot(
     *,
     image_bgr,
+    crop_bgr=None,
     box_xyxy: tuple[int, int, int, int] | None,
     text: str,
     endpoint: str,
     filename: str | None,
+    extra_meta: dict[str, Any] | None = None,
 ) -> None:
     if not _DEBUG_VISUALIZATION_ENABLED:
         return
@@ -204,10 +207,14 @@ def _save_debug_snapshot(
             "text": label,
             "bbox": list(box_xyxy) if box_xyxy is not None else None,
         }
+        if extra_meta:
+            meta.update(extra_meta)
 
         with _DEBUG_LOCK:
             DATA_DIR.mkdir(parents=True, exist_ok=True)
             cv2.imwrite(str(DEBUG_IMAGE_PATH), canvas)
+            if crop_bgr is not None and getattr(crop_bgr, "size", 0):
+                cv2.imwrite(str(DEBUG_CROP_IMAGE_PATH), crop_bgr)
             DEBUG_META_PATH.write_text(
                 json.dumps(meta, ensure_ascii=False, indent=2),
                 encoding="utf-8",
@@ -259,16 +266,18 @@ def _recognize_seal(img) -> str:
     return text or ""
 
 
-def _recognize_container(img) -> tuple[str, str, dict[str, float]]:
+def _recognize_container(img) -> tuple[str, str, dict[str, float], dict[str, Any]]:
     ocr_ms = 0.0
     validation_ms = 0.0
     postprocess_ms = 0.0
 
     t_ocr = time.perf_counter()
-    text, _score, is_valid = container_ocr.ocr_container_best(img)
+    details = container_ocr.ocr_container_best_details(img)
     ocr_ms += (time.perf_counter() - t_ocr) * 1000.0
 
-    raw_text = text or ""
+    raw_text = str(details.get("text") or "")
+    is_valid = bool(details.get("is_valid"))
+    ocr_debug = details.get("ocr_debug") or {}
 
     t_valid = time.perf_counter()
     normalized = raw_text if (raw_text and is_valid) else "NOT_FOUND"
@@ -278,7 +287,16 @@ def _recognize_container(img) -> tuple[str, str, dict[str, float]]:
         "ocr_ms": round(ocr_ms, 3),
         "validation_ms": round(validation_ms, 3),
         "postprocess_ms": round(postprocess_ms, 3),
-    }
+    }, ocr_debug
+
+
+def _shape_list(img) -> list[int] | None:
+    if img is None or not hasattr(img, "shape"):
+        return None
+    try:
+        return [int(v) for v in img.shape]
+    except Exception:
+        return None
 
 
 def _recognize_container_crop(img, settings: dict[str, Any] | None = None) -> tuple[str, str, str, str, str, str, dict[str, float]]:
@@ -413,6 +431,8 @@ async def RecognizeContainerNumber(files: list[UploadFile] = File(default_factor
     settings = _load_container_config()
     processed_count = 0
     last_text = ""
+    last_failure_reason = ""
+    last_ocr_debug: dict[str, Any] = {}
     found_container = None
     last_timings: dict[str, float] = {}
     max_size_bytes = MAX_FILE_SIZE_MB * 1024 * 1024
@@ -456,20 +476,60 @@ async def RecognizeContainerNumber(files: list[UploadFile] = File(default_factor
         t_bbox = time.perf_counter()
         img_crop, bbox = _safe_detect_and_crop_container_with_box(img, settings)
         stage_timings["bbox_ms"] = round((time.perf_counter() - t_bbox) * 1000.0, 3)
+        logger.info(
+            "container bbox file=%s img_shape=%s crop_shape=%s bbox=%s bbox_ms=%.3f",
+            f.filename,
+            _shape_list(img),
+            _shape_list(img_crop),
+            list(bbox) if bbox is not None else None,
+            stage_timings["bbox_ms"],
+        )
         if img_crop is None:
             logger.info("skip file=%s reason=crop_not_found", f.filename)
             stage_timings["total_ms"] = round((time.perf_counter() - t0) * 1000.0, 3)
             last_timings = stage_timings
+            last_failure_reason = "crop_not_found"
+            last_ocr_debug = {}
             continue
 
-        raw_text, normalized, rc_timings = _recognize_container(img_crop)
+        raw_text, normalized, rc_timings, ocr_debug = _recognize_container(img_crop)
         stage_timings["ocr_ms"] = rc_timings.get("ocr_ms", 0.0)
         stage_timings["validation_ms"] = rc_timings.get("validation_ms", 0.0)
         stage_timings["postprocess_ms"] = rc_timings.get("postprocess_ms", 0.0)
+        last_ocr_debug = dict(ocr_debug)
         if not raw_text:
-            logger.info("skip file=%s reason=ocr_empty", f.filename)
+            ocr_reason = str(ocr_debug.get("reason") or "ocr_empty")
+            logger.info(
+                "skip file=%s reason=ocr_empty ocr_reason=%s img_shape=%s crop_shape=%s bbox=%s ocr_ms=%.3f text_pairs=%s candidates=%s",
+                f.filename,
+                ocr_reason,
+                _shape_list(img),
+                _shape_list(img_crop),
+                list(bbox) if bbox is not None else None,
+                stage_timings["ocr_ms"],
+                ocr_debug.get("text_pairs"),
+                ocr_debug.get("normalized_candidates"),
+            )
             stage_timings["total_ms"] = round((time.perf_counter() - t0) * 1000.0, 3)
             last_timings = stage_timings
+            last_failure_reason = ocr_reason
+            if settings.get("save_debug_on_not_found", True):
+                _save_debug_snapshot(
+                    image_bgr=img,
+                    crop_bgr=img_crop,
+                    box_xyxy=bbox,
+                    text=ocr_reason,
+                    endpoint="RecognizeContainerNumber",
+                    filename=f.filename,
+                    extra_meta={
+                        "reason": "ocr_empty",
+                        "ocr_reason": ocr_reason,
+                        "image_shape": _shape_list(img),
+                        "crop_shape": _shape_list(img_crop),
+                        "timings_ms": stage_timings,
+                        "ocr_debug": ocr_debug,
+                    },
+                )
             continue
 
         if normalized == "NOT_FOUND" and settings.get("accept_non_iso_result", False):
@@ -480,6 +540,7 @@ async def RecognizeContainerNumber(files: list[UploadFile] = File(default_factor
         last_timings = stage_timings
         processed_count += 1
         last_text = raw_text
+        last_failure_reason = ""
 
         status = "DONE" if normalized != "NOT_FOUND" else "NOT_FOUND"
         _record_recognition(
@@ -495,10 +556,17 @@ async def RecognizeContainerNumber(files: list[UploadFile] = File(default_factor
         if normalized != "NOT_FOUND" or save_on_not_found:
             _save_debug_snapshot(
                 image_bgr=img,
+                crop_bgr=img_crop,
                 box_xyxy=bbox,
                 text=normalized if normalized != "NOT_FOUND" else raw_text,
                 endpoint="RecognizeContainerNumber",
                 filename=f.filename,
+                extra_meta={
+                    "image_shape": _shape_list(img),
+                    "crop_shape": _shape_list(img_crop),
+                    "timings_ms": stage_timings,
+                    "ocr_debug": ocr_debug,
+                },
             )
 
         if normalized != "NOT_FOUND":
@@ -520,6 +588,8 @@ async def RecognizeContainerNumber(files: list[UploadFile] = File(default_factor
         "message": f"processed: {processed_count}, RESULT: {result_text}",
         "result": result_text,
         "raw_text": last_text,
+        "failure_reason": last_failure_reason,
+        "ocr_debug": last_ocr_debug,
         "timings_ms": last_timings,
     }
 
@@ -702,6 +772,13 @@ def admin_debug_last_image():
     if not DEBUG_IMAGE_PATH.exists():
         raise HTTPException(status_code=404, detail="No debug image yet")
     return FileResponse(str(DEBUG_IMAGE_PATH), media_type="image/jpeg")
+
+
+@app.get("/admin/debug/last-crop-image")
+def admin_debug_last_crop_image():
+    if not DEBUG_CROP_IMAGE_PATH.exists():
+        raise HTTPException(status_code=404, detail="No debug crop image yet")
+    return FileResponse(str(DEBUG_CROP_IMAGE_PATH), media_type="image/jpeg")
 
 
 @app.get("/admin/recognized")
