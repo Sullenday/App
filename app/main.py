@@ -27,6 +27,7 @@ DATA_DIR = PROJECT_ROOT / "dashboard_data"
 HISTORY_DB_PATH = DATA_DIR / "recognitions.db"
 DEBUG_IMAGE_PATH = DATA_DIR / "last_debug.jpg"
 DEBUG_CROP_IMAGE_PATH = DATA_DIR / "last_debug_crop.jpg"
+DEBUG_SEGMENTATION_IMAGE_PATH = DATA_DIR / "last_debug_segmentation.jpg"
 DEBUG_META_PATH = DATA_DIR / "last_debug.json"
 CONTAINER_CONFIG_PATH = Path(os.getenv("CONTAINER_CONFIG_PATH", PROJECT_ROOT / "app" / "container_recognition_config.json"))
 
@@ -173,6 +174,7 @@ def _save_debug_snapshot(
     *,
     image_bgr,
     crop_bgr=None,
+    segmentation_bgr=None,
     box_xyxy: tuple[int, int, int, int] | None,
     text: str,
     endpoint: str,
@@ -215,6 +217,14 @@ def _save_debug_snapshot(
             cv2.imwrite(str(DEBUG_IMAGE_PATH), canvas)
             if crop_bgr is not None and getattr(crop_bgr, "size", 0):
                 cv2.imwrite(str(DEBUG_CROP_IMAGE_PATH), crop_bgr)
+            elif DEBUG_CROP_IMAGE_PATH.exists():
+                DEBUG_CROP_IMAGE_PATH.unlink()
+            if segmentation_bgr is not None and getattr(segmentation_bgr, "size", 0):
+                cv2.imwrite(str(DEBUG_SEGMENTATION_IMAGE_PATH), segmentation_bgr)
+            elif DEBUG_SEGMENTATION_IMAGE_PATH.exists():
+                DEBUG_SEGMENTATION_IMAGE_PATH.unlink()
+            meta["crop_available"] = DEBUG_CROP_IMAGE_PATH.exists()
+            meta["segmentation_available"] = DEBUG_SEGMENTATION_IMAGE_PATH.exists()
             DEBUG_META_PATH.write_text(
                 json.dumps(meta, ensure_ascii=False, indent=2),
                 encoding="utf-8",
@@ -266,21 +276,34 @@ def _recognize_seal(img) -> str:
     return text or ""
 
 
-def _recognize_container(img) -> tuple[str, str, dict[str, float], dict[str, Any]]:
+def _recognize_container(
+    img, settings: dict[str, Any] | None = None
+) -> tuple[str, str, dict[str, float], dict[str, Any]]:
     ocr_ms = 0.0
     validation_ms = 0.0
     postprocess_ms = 0.0
 
     t_ocr = time.perf_counter()
-    details = container_ocr.ocr_container_best_details(img)
+    details = container_ocr.ocr_container_from_crop_details(img, config=settings or {})
     ocr_ms += (time.perf_counter() - t_ocr) * 1000.0
 
-    raw_text = str(details.get("text") or "")
-    is_valid = bool(details.get("is_valid"))
-    ocr_debug = details.get("ocr_debug") or {}
-
     t_valid = time.perf_counter()
-    normalized = raw_text if (raw_text and is_valid) else "NOT_FOUND"
+    raw_text = str(details.get("raw_text") or "")
+    full_code = str(details.get("full_code") or "")
+    base10 = str(details.get("base10") or "")
+    check_digit = str(details.get("check_digit") or "")
+    status = str(details.get("status") or "NOT_FOUND")
+    is_valid_iso = bool(details.get("is_valid_iso"))
+    score = float(details.get("score") or -1.0)
+    normalized = full_code if full_code else "NOT_FOUND"
+    ocr_debug: dict[str, Any] = {
+        "reason": "ok" if normalized != "NOT_FOUND" else status.lower(),
+        "status": status,
+        "base10": base10,
+        "check_digit": check_digit,
+        "score": round(score, 4),
+        "is_valid_iso": is_valid_iso,
+    }
     validation_ms += (time.perf_counter() - t_valid) * 1000.0
 
     return raw_text, normalized, {
@@ -297,6 +320,273 @@ def _shape_list(img) -> list[int] | None:
         return [int(v) for v in img.shape]
     except Exception:
         return None
+
+
+def _ensure_bgr_local(img):
+    if img is None or not getattr(img, "size", 0):
+        return None
+    if len(img.shape) == 2:
+        return cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
+    return img
+
+
+def _resize_debug_preview(img, *, max_w: int = 520, max_h: int = 220):
+    if img is None or not getattr(img, "size", 0):
+        return None
+    h, w = img.shape[:2]
+    if h <= 0 or w <= 0:
+        return None
+    scale = min(max_w / float(w), max_h / float(h), 1.0)
+    if scale >= 0.999:
+        return img.copy()
+    new_w = max(1, int(round(w * scale)))
+    new_h = max(1, int(round(h * scale)))
+    return cv2.resize(img, (new_w, new_h), interpolation=cv2.INTER_AREA)
+
+
+def _debug_tile(label: str, img):
+    preview = _resize_debug_preview(_ensure_bgr_local(img))
+    if preview is None:
+        return None
+    header_h = 28
+    canvas = np.full((header_h + preview.shape[0], preview.shape[1], 3), 255, dtype=np.uint8)
+    canvas[header_h:, :] = preview
+    cv2.putText(
+        canvas,
+        label[:48],
+        (8, 19),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.55,
+        (40, 60, 90),
+        1,
+        cv2.LINE_AA,
+    )
+    return canvas
+
+
+def _pad_debug_tile(img, width: int, height: int):
+    canvas = np.full((height, width, 3), 255, dtype=np.uint8)
+    y = max(0, (height - img.shape[0]) // 2)
+    x = max(0, (width - img.shape[1]) // 2)
+    canvas[y:y + img.shape[0], x:x + img.shape[1]] = img
+    return canvas
+
+
+def _stack_debug_tiles(tiles: list[np.ndarray], *, columns: int = 2):
+    valid = [tile for tile in tiles if tile is not None and getattr(tile, "size", 0)]
+    if not valid:
+        return None
+    rows: list[np.ndarray] = []
+    for idx in range(0, len(valid), columns):
+        row_tiles = valid[idx:idx + columns]
+        max_h = max(tile.shape[0] for tile in row_tiles)
+        max_w = max(tile.shape[1] for tile in row_tiles)
+        padded = [_pad_debug_tile(tile, max_w, max_h) for tile in row_tiles]
+        if len(padded) < columns:
+            padded.extend([np.full((max_h, max_w, 3), 255, dtype=np.uint8) for _ in range(columns - len(padded))])
+        rows.append(cv2.hconcat(padded))
+    total_w = max(row.shape[1] for row in rows)
+    padded_rows = [_pad_debug_tile(row, total_w, row.shape[0]) for row in rows]
+    return cv2.vconcat(padded_rows)
+
+
+def _compose_symbol_strip_safe(rois, **kwargs):
+    if not rois:
+        return None
+    try:
+        return container_ocr._compose_symbol_strip(rois, **kwargs)
+    except Exception:
+        return None
+
+
+def _build_container_segmentation_debug(crop_bgr, settings: dict[str, Any] | None = None):
+    if crop_bgr is None or not getattr(crop_bgr, "size", 0):
+        return None, {}
+
+    runtime_config = settings or {}
+    layout_type = str(container_ocr.classify_container_layout(crop_bgr, runtime_config) or "unknown")
+    seg_meta: dict[str, Any] = {"layout_type": layout_type}
+    tiles: list[np.ndarray] = []
+
+    try:
+        if layout_type == "twolines":
+            top_roi, bottom_roi = container_ocr.extract_two_line_rois(crop_bgr)
+            if top_roi is not None and bottom_roi is not None:
+                top_symbols = container_ocr._extract_horizontal_symbol_rois(top_roi)
+                bottom_symbols = container_ocr._extract_horizontal_symbol_rois(bottom_roi)
+                seg_meta["top_symbol_count"] = len(top_symbols)
+                seg_meta["bottom_symbol_count"] = len(bottom_symbols)
+                tiles.extend(
+                    [
+                        _debug_tile("Top ROI", top_roi),
+                        _debug_tile("Bottom ROI", bottom_roi),
+                        _debug_tile(
+                            f"Top strip ({len(top_symbols)})",
+                            _compose_symbol_strip_safe(top_symbols[:4], target_h=64, gap=10, outer_pad=8),
+                        ),
+                        _debug_tile(
+                            f"Bottom strip ({len(bottom_symbols)})",
+                            _compose_symbol_strip_safe(bottom_symbols[:7], target_h=64, gap=8, outer_pad=8, square_last=len(bottom_symbols) >= 7),
+                        ),
+                    ]
+                )
+            else:
+                split = container_ocr.extract_split_door_rois(crop_bgr, config=runtime_config)
+                if split:
+                    owner_symbols = container_ocr._extract_light_symbol_rois(
+                        split["top_left"],
+                        expected=4,
+                        min_h_ratio=0.45,
+                        min_w_ratio=0.025,
+                        max_w_ratio=0.38,
+                        v_min=118,
+                        s_max=105,
+                    )
+                    left_symbols = container_ocr._extract_light_symbol_rois(
+                        split["bottom_left"],
+                        expected=4,
+                        min_h_ratio=0.45,
+                        min_w_ratio=0.025,
+                        max_w_ratio=0.42,
+                        v_min=140,
+                        s_max=60,
+                    )
+                    right_symbols = container_ocr._extract_light_symbol_rois(
+                        split["bottom_right"],
+                        expected=3,
+                        min_h_ratio=0.40,
+                        min_w_ratio=0.02,
+                        max_w_ratio=0.44,
+                        v_min=140,
+                        s_max=75,
+                    )
+                    seg_meta["segmentation_kind"] = "split_door"
+                    seg_meta["owner_symbol_count"] = len(owner_symbols)
+                    seg_meta["left_symbol_count"] = len(left_symbols)
+                    seg_meta["right_symbol_count"] = len(right_symbols)
+                    tiles.extend(
+                        [
+                            _debug_tile("Top left", split["top_left"]),
+                            _debug_tile("Bottom left", split["bottom_left"]),
+                            _debug_tile("Bottom right", split["bottom_right"]),
+                            _debug_tile(
+                                f"Owner strip ({len(owner_symbols)})",
+                                _compose_symbol_strip_safe(owner_symbols[:4], target_h=64, gap=10, outer_pad=8),
+                            ),
+                            _debug_tile(
+                                f"Left digits ({len(left_symbols)})",
+                                _compose_symbol_strip_safe(left_symbols[:4], target_h=64, gap=8, outer_pad=8),
+                            ),
+                            _debug_tile(
+                                f"Right digits ({len(right_symbols)})",
+                                _compose_symbol_strip_safe(
+                                    right_symbols[:3],
+                                    target_h=64,
+                                    gap=8,
+                                    outer_pad=8,
+                                    square_last=len(right_symbols) >= 3,
+                                ),
+                            ),
+                        ]
+                    )
+        elif layout_type == "vertical":
+            segmented = container_ocr._extract_vertical_symbol_rois(crop_bgr)
+            grid11 = container_ocr._vertical_grid_rois(crop_bgr, 11)
+            seg_meta["segmented_symbol_count"] = len(segmented)
+            seg_meta["grid11_symbol_count"] = len(grid11)
+            tiles.extend(
+                [
+                    _debug_tile(
+                        f"Vertical segmented ({len(segmented)})",
+                        _compose_symbol_strip_safe(segmented[:11], target_h=92, gap=8, outer_pad=10, square_last=len(segmented) >= 11),
+                    ),
+                    _debug_tile(
+                        f"Vertical grid11 ({len(grid11)})",
+                        _compose_symbol_strip_safe(grid11[:11], target_h=92, gap=8, outer_pad=10, square_last=len(grid11) >= 11),
+                    ),
+                ]
+            )
+        else:
+            expanded = container_ocr._expand_crop(crop_bgr)
+            letters_zone = container_ocr._extract_zone(expanded, 0.02, 0.40, 0.02, 0.98)
+            digits_zone = container_ocr._extract_zone(expanded, 0.30, 1.00, 0.02, 0.98)
+            right_zone = container_ocr._extract_zone(expanded, 0.72, 1.00, 0.03, 0.97)
+            tight_zone = container_ocr._extract_zone(expanded, 0.84, 1.00, 0.02, 0.98)
+            square_rois = []
+            if right_zone is not None and getattr(right_zone, "size", 0):
+                square_rois = container_ocr._square_like_rois(right_zone)
+            seg_meta["square_like_count"] = len(square_rois)
+            tiles.extend(
+                [
+                    _debug_tile("Expanded crop", expanded),
+                    _debug_tile("Letters zone", letters_zone),
+                    _debug_tile("Digits zone", digits_zone),
+                    _debug_tile("Right zone", right_zone),
+                    _debug_tile("Tight right zone", tight_zone),
+                    _debug_tile("Square check ROI", square_rois[0] if square_rois else None),
+                ]
+            )
+    except Exception as exc:
+        seg_meta["segmentation_error"] = str(exc)
+
+    segmentation_bgr = _stack_debug_tiles(tiles, columns=2)
+    return segmentation_bgr, seg_meta
+
+
+def _save_container_debug_snapshot(
+    *,
+    image_bgr,
+    crop_bgr,
+    box_xyxy: tuple[int, int, int, int] | None,
+    text: str,
+    endpoint: str,
+    filename: str | None,
+    settings: dict[str, Any] | None = None,
+    extra_meta: dict[str, Any] | None = None,
+) -> None:
+    segmentation_bgr = None
+    seg_meta: dict[str, Any] = {}
+    if _DEBUG_VISUALIZATION_ENABLED and crop_bgr is not None and getattr(crop_bgr, "size", 0):
+        segmentation_bgr, seg_meta = _build_container_segmentation_debug(crop_bgr, settings)
+    merged_meta = dict(extra_meta or {})
+    merged_meta.update(seg_meta)
+    _save_debug_snapshot(
+        image_bgr=image_bgr,
+        crop_bgr=crop_bgr,
+        segmentation_bgr=segmentation_bgr,
+        box_xyxy=box_xyxy,
+        text=text,
+        endpoint=endpoint,
+        filename=filename,
+        extra_meta=merged_meta,
+    )
+
+
+def _print_crop_ratio_debug(label: str, filename: str | None, source_img, crop_img, bbox: tuple[int, int, int, int] | None = None) -> None:
+    def _ratio_parts(img) -> tuple[int | None, int | None, float | None]:
+        if img is None or not hasattr(img, "shape"):
+            return None, None, None
+        h, w = img.shape[:2]
+        if h <= 0 or w <= 0:
+            return int(h), int(w), None
+        return int(h), int(w), float(w) / float(h)
+
+    src_h, src_w, src_ratio = _ratio_parts(source_img)
+    crop_h, crop_w, crop_ratio = _ratio_parts(crop_img)
+    bbox_w = None
+    bbox_h = None
+    if bbox is not None:
+        x1, y1, x2, y2 = bbox
+        bbox_w = max(0, int(x2) - int(x1))
+        bbox_h = max(0, int(y2) - int(y1))
+    print(
+        "[crop-ratio] "
+        f"label={label} "
+        f"file={filename or ''} "
+        f"src_h={src_h} src_w={src_w} src_ratio={src_ratio if src_ratio is None else round(src_ratio, 3)} "
+        f"crop_h={crop_h} crop_w={crop_w} crop_ratio={crop_ratio if crop_ratio is None else round(crop_ratio, 3)} "
+        f"container_h={crop_h} container_w={crop_w} bbox_h={bbox_h} bbox_w={bbox_w}"
+    )
 
 
 def _recognize_container_crop(img, settings: dict[str, Any] | None = None) -> tuple[str, str, str, str, str, str, dict[str, float]]:
@@ -484,6 +774,7 @@ async def RecognizeContainerNumber(files: list[UploadFile] = File(default_factor
             list(bbox) if bbox is not None else None,
             stage_timings["bbox_ms"],
         )
+        _print_crop_ratio_debug("RecognizeContainerNumber", f.filename, img, img_crop, bbox)
         if img_crop is None:
             logger.info("skip file=%s reason=crop_not_found", f.filename)
             stage_timings["total_ms"] = round((time.perf_counter() - t0) * 1000.0, 3)
@@ -492,12 +783,12 @@ async def RecognizeContainerNumber(files: list[UploadFile] = File(default_factor
             last_ocr_debug = {}
             continue
 
-        raw_text, normalized, rc_timings, ocr_debug = _recognize_container(img_crop)
+        raw_text, normalized, rc_timings, ocr_debug = _recognize_container(img_crop, settings)
         stage_timings["ocr_ms"] = rc_timings.get("ocr_ms", 0.0)
         stage_timings["validation_ms"] = rc_timings.get("validation_ms", 0.0)
         stage_timings["postprocess_ms"] = rc_timings.get("postprocess_ms", 0.0)
         last_ocr_debug = dict(ocr_debug)
-        if not raw_text:
+        if not raw_text and normalized == "NOT_FOUND":
             ocr_reason = str(ocr_debug.get("reason") or "ocr_empty")
             logger.info(
                 "skip file=%s reason=ocr_empty ocr_reason=%s img_shape=%s crop_shape=%s bbox=%s ocr_ms=%.3f text_pairs=%s candidates=%s",
@@ -514,13 +805,14 @@ async def RecognizeContainerNumber(files: list[UploadFile] = File(default_factor
             last_timings = stage_timings
             last_failure_reason = ocr_reason
             if settings.get("save_debug_on_not_found", True):
-                _save_debug_snapshot(
+                _save_container_debug_snapshot(
                     image_bgr=img,
                     crop_bgr=img_crop,
                     box_xyxy=bbox,
                     text=ocr_reason,
                     endpoint="RecognizeContainerNumber",
                     filename=f.filename,
+                    settings=settings,
                     extra_meta={
                         "reason": "ocr_empty",
                         "ocr_reason": ocr_reason,
@@ -554,13 +846,14 @@ async def RecognizeContainerNumber(files: list[UploadFile] = File(default_factor
 
         save_on_not_found = settings.get("save_debug_on_not_found", True)
         if normalized != "NOT_FOUND" or save_on_not_found:
-            _save_debug_snapshot(
+            _save_container_debug_snapshot(
                 image_bgr=img,
                 crop_bgr=img_crop,
                 box_xyxy=bbox,
                 text=normalized if normalized != "NOT_FOUND" else raw_text,
                 endpoint="RecognizeContainerNumber",
                 filename=f.filename,
+                settings=settings,
                 extra_meta={
                     "image_shape": _shape_list(img),
                     "crop_shape": _shape_list(img_crop),
@@ -648,6 +941,7 @@ async def RecognizeContainerCropNumber(files: list[UploadFile] = File(default_fa
             last_timings = stage_timings
             continue
 
+        _print_crop_ratio_debug("RecognizeContainerCropNumber", f.filename, img, img, None)
         raw_text, candidate, base10, check_digit, status, normalized, rc_timings = _recognize_container_crop(img, settings)
         stage_timings["ocr_ms"] = rc_timings.get("ocr_ms", 0.0)
         stage_timings["validation_ms"] = rc_timings.get("validation_ms", 0.0)
@@ -685,12 +979,20 @@ async def RecognizeContainerCropNumber(files: list[UploadFile] = File(default_fa
 
         save_on_not_found = settings.get("save_debug_on_not_found", True)
         if normalized != "NOT_FOUND" or save_on_not_found:
-            _save_debug_snapshot(
+            _save_container_debug_snapshot(
                 image_bgr=img,
+                crop_bgr=img,
                 box_xyxy=None,
                 text=normalized if normalized != "NOT_FOUND" else (candidate or raw_text),
                 endpoint="RecognizeContainerCropNumber",
                 filename=f.filename,
+                settings=settings,
+                extra_meta={
+                    "image_shape": _shape_list(img),
+                    "crop_shape": _shape_list(img),
+                    "timings_ms": stage_timings,
+                    "status": status,
+                },
             )
 
         if status == "FULL_11":
@@ -779,6 +1081,13 @@ def admin_debug_last_crop_image():
     if not DEBUG_CROP_IMAGE_PATH.exists():
         raise HTTPException(status_code=404, detail="No debug crop image yet")
     return FileResponse(str(DEBUG_CROP_IMAGE_PATH), media_type="image/jpeg")
+
+
+@app.get("/admin/debug/last-segmentation-image")
+def admin_debug_last_segmentation_image():
+    if not DEBUG_SEGMENTATION_IMAGE_PATH.exists():
+        raise HTTPException(status_code=404, detail="No debug segmentation image yet")
+    return FileResponse(str(DEBUG_SEGMENTATION_IMAGE_PATH), media_type="image/jpeg")
 
 
 @app.get("/admin/recognized")

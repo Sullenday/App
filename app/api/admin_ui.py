@@ -24,6 +24,7 @@ from fastapi import FastAPI, File, Form, HTTPException, Query, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse, Response
 from pydantic import BaseModel, Field
 
+from .. import container_crop_service
 from ..config.admin_ui_settings import get_bool, get_int, get_visible_tabs
 from ..container_layout import classify_container_layout
 
@@ -445,6 +446,19 @@ def _normalize_text(value: str | None) -> str:
     return "".join(ch for ch in value.upper() if ch.isalnum())
 
 
+def _item_is_error_or_mismatch(item: dict[str, Any]) -> bool:
+    if item.get("error"):
+        return True
+    status_code = item.get("status_code")
+    if status_code not in (None, "", 200, "200"):
+        return True
+    expected = _normalize_text(str(item.get("expected_text") or item.get("expected_label") or ""))
+    if not expected:
+        return False
+    predicted = _normalize_text(str(item.get("normalized_predicted") or item.get("predicted_text") or ""))
+    return predicted != expected
+
+
 def _extract_result_text(response_obj: Any, fallback_text: str) -> str:
     if isinstance(response_obj, dict):
         result = response_obj.get("result")
@@ -549,7 +563,7 @@ def _detect_number_type_from_image_bytes(image_bytes: bytes, mode: str) -> str:
     img = cv2.imdecode(arr, cv2.IMREAD_COLOR)
     if img is None:
         return "unknown"
-    return str(classify_container_layout(img) or "unknown")
+    return _detect_container_type_from_image(img)
 
 
 def _detect_number_type_from_image_path(image_path: Path, mode: str) -> str:
@@ -558,7 +572,39 @@ def _detect_number_type_from_image_path(image_path: Path, mode: str) -> str:
     img = cv2.imread(str(image_path))
     if img is None:
         return "unknown"
-    return str(classify_container_layout(img) or "unknown")
+    return _detect_container_type_from_image(img)
+
+
+def _detect_container_type_from_image(img) -> str:
+    direct_type = "unknown"
+    try:
+        direct_type = str(classify_container_layout(img) or "unknown")
+    except Exception as exc:
+        logger.debug("direct container type detection failed: %s", exc)
+
+    crop_type = "unknown"
+    try:
+        fn = getattr(container_crop_service, "detect_and_crop_container_with_box", None)
+        if callable(fn):
+            crop, _bbox = fn(img)
+            if crop is not None and getattr(crop, "size", 0):
+                crop_type = str(classify_container_layout(crop) or "unknown")
+
+        if crop_type == "unknown":
+            fallback = getattr(container_crop_service, "detect_and_crop", None)
+            if callable(fallback):
+                crops = fallback(img)
+                if crops:
+                    crop = crops[0]
+                    if crop is not None and getattr(crop, "size", 0):
+                        crop_type = str(classify_container_layout(crop) or "unknown")
+    except Exception as exc:
+        logger.debug("container type detection by crop failed: %s", exc)
+
+    for candidate in (crop_type, direct_type):
+        if candidate and candidate != "unknown":
+            return candidate
+    return "unknown"
 
 
 def _percentile(values: list[float], p: float) -> float | None:
@@ -1011,8 +1057,9 @@ def _build_testing_html_report(run: dict[str, Any]) -> str:
 def _build_request_rows_html(items: list[dict[str, Any]]) -> str:
     row_html: list[str] = []
     for it in items:
+        row_style = ' style="background:#ffe1e1;"' if _item_is_error_or_mismatch(it) else ""
         row_html.append(
-            "<tr>"
+            f"<tr{row_style}>"
             f"<td>{html.escape(str(it.get('file_name') or ''))}</td>"
             f"<td>{html.escape(str(it.get('number_type') or 'unknown'))}</td>"
             f"<td>{html.escape(str(it.get('predicted_text') or ''))}</td>"
@@ -1398,6 +1445,34 @@ def get_debug_image() -> Response:
         raise HTTPException(status_code=502, detail=f"Service request failed: {exc}") from exc
     if resp.status_code == 404:
         raise HTTPException(status_code=404, detail="No debug image yet")
+    if not resp.ok:
+        raise HTTPException(status_code=resp.status_code, detail=resp.text)
+    return Response(content=resp.content, media_type="image/jpeg")
+
+
+@app.get("/api/debug/crop-image")
+def get_debug_crop_image() -> Response:
+    cfg = _load_config()
+    try:
+        resp = requests.get(f"{_service_base_url(cfg)}/admin/debug/last-crop-image", timeout=15)
+    except requests.RequestException as exc:
+        raise HTTPException(status_code=502, detail=f"Service request failed: {exc}") from exc
+    if resp.status_code == 404:
+        raise HTTPException(status_code=404, detail="No debug crop image yet")
+    if not resp.ok:
+        raise HTTPException(status_code=resp.status_code, detail=resp.text)
+    return Response(content=resp.content, media_type="image/jpeg")
+
+
+@app.get("/api/debug/segmentation-image")
+def get_debug_segmentation_image() -> Response:
+    cfg = _load_config()
+    try:
+        resp = requests.get(f"{_service_base_url(cfg)}/admin/debug/last-segmentation-image", timeout=15)
+    except requests.RequestException as exc:
+        raise HTTPException(status_code=502, detail=f"Service request failed: {exc}") from exc
+    if resp.status_code == 404:
+        raise HTTPException(status_code=404, detail="No debug segmentation image yet")
     if not resp.ok:
         raise HTTPException(status_code=resp.status_code, detail=resp.text)
     return Response(content=resp.content, media_type="image/jpeg")

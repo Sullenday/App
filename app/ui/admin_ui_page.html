@@ -43,6 +43,7 @@
     table { width:100%; border-collapse: collapse; margin-top:8px; }
     th, td { border:1px solid #dce4ef; padding:6px; font-size:12px; text-align:left; }
     th { background:#eef3fb; position: sticky; top: 0; }
+    tr.row-alert td { background:#ffe1e1; }
     .table-wrap { max-height:430px; overflow:auto; border:1px solid #dce4ef; border-radius:8px; }
     .img-wrap { margin-top:8px; }
     .img-wrap img { max-width:100%; border:1px solid #dce4ef; border-radius:8px; display:none; }
@@ -124,6 +125,14 @@
       <div class="img-wrap">
         <div id="debug_img_placeholder" class="img-placeholder">No debug image yet.</div>
         <img id="debug_img" alt="debug image"/>
+      </div>
+      <div class="img-wrap">
+        <div id="debug_crop_placeholder" class="img-placeholder">No debug crop yet.</div>
+        <img id="debug_crop_img" alt="debug crop image"/>
+      </div>
+      <div class="img-wrap">
+        <div id="debug_seg_placeholder" class="img-placeholder">No debug segmentation yet.</div>
+        <img id="debug_seg_img" alt="debug segmentation image"/>
       </div>
       <h3>All Recognized Numbers</h3>
       <div class="table-wrap">
@@ -299,7 +308,7 @@ async function api(url, opts={}) {
 function setStatus(id, text) { qs(id).textContent = text || ''; }
 
 function isDebugImageHiddenBySetting() {
-  return !!(qs('#cfg_debug') && qs('#cfg_debug').checked);
+  return false;
 }
 
 function setDownloadReportState(enabled) {
@@ -315,9 +324,6 @@ async function loadConfig() {
   qs('#cfg_port').value = c.port;
   qs('#cfg_workers').value = c.workers;
   qs('#cfg_debug').checked = !!c.debug_visualization;
-  if (isDebugImageHiddenBySetting()) {
-    showDebugPlaceholder('Debug image is hidden while "Enable debug visualization" is ON.');
-  }
 }
 
 async function saveConfig() {
@@ -330,11 +336,7 @@ async function saveConfig() {
   await api('/api/service/config', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload)});
   await api('/api/debug/config', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({enabled: payload.debug_visualization})});
   await refreshStatus();
-  if (payload.debug_visualization) {
-    showDebugPlaceholder('Debug image is hidden while "Enable debug visualization" is ON.');
-  } else {
-    refreshDebug().catch(() => {});
-  }
+  refreshDebug().catch(() => {});
 }
 
 async function refreshStatus() {
@@ -370,30 +372,62 @@ function showDebugPlaceholder(text) {
   placeholder.textContent = text || 'No debug image yet.';
 }
 
-async function refreshDebug() {
-  const m = await api('/api/debug/meta');
-  setStatus('#debug_meta', JSON.stringify(m, null, 2));
-  if (isDebugImageHiddenBySetting()) {
-    showDebugPlaceholder('Debug image is hidden while "Enable debug visualization" is ON.');
+function showOptionalDebugPlaceholder(imgSelector, placeholderSelector, text) {
+  const img = qs(imgSelector);
+  const placeholder = qs(placeholderSelector);
+  img.style.display = 'none';
+  img.removeAttribute('src');
+  placeholder.style.display = 'block';
+  placeholder.textContent = text;
+}
+
+function loadOptionalDebugImage(imgSelector, placeholderSelector, url, available, loadingText, missingText) {
+  const img = qs(imgSelector);
+  const placeholder = qs(placeholderSelector);
+  if (!available) {
+    showOptionalDebugPlaceholder(imgSelector, placeholderSelector, missingText);
     return;
   }
-  if (!m.available) {
-    showDebugPlaceholder('No debug image yet.');
-    return;
-  }
-  const img = qs('#debug_img');
-  const placeholder = qs('#debug_img_placeholder');
   img.onload = () => {
     placeholder.style.display = 'none';
     img.style.display = 'block';
   };
   img.onerror = () => {
-    showDebugPlaceholder('Debug image is unavailable.');
+    showOptionalDebugPlaceholder(imgSelector, placeholderSelector, missingText);
   };
   placeholder.style.display = 'block';
-  placeholder.textContent = 'Loading debug image...';
+  placeholder.textContent = loadingText;
   img.style.display = 'none';
-  img.src = '/api/debug/image?ts=' + Date.now();
+  img.src = url + '?ts=' + Date.now();
+}
+
+async function refreshDebug() {
+  const m = await api('/api/debug/meta');
+  setStatus('#debug_meta', JSON.stringify(m, null, 2));
+  if (!m.available) {
+    showDebugPlaceholder('No debug image yet.');
+    showOptionalDebugPlaceholder('#debug_crop_img', '#debug_crop_placeholder', 'No debug crop yet.');
+    showOptionalDebugPlaceholder('#debug_seg_img', '#debug_seg_placeholder', 'No debug segmentation yet.');
+    return;
+  }
+  const meta = m.meta || {};
+  loadOptionalDebugImage('#debug_img', '#debug_img_placeholder', '/api/debug/image', true, 'Loading debug image...', 'Debug image is unavailable.');
+  loadOptionalDebugImage(
+    '#debug_crop_img',
+    '#debug_crop_placeholder',
+    '/api/debug/crop-image',
+    !!meta.crop_available,
+    'Loading debug crop...',
+    'No debug crop yet.'
+  );
+  loadOptionalDebugImage(
+    '#debug_seg_img',
+    '#debug_seg_placeholder',
+    '/api/debug/segmentation-image',
+    !!meta.segmentation_available,
+    'Loading debug segmentation...',
+    'No debug segmentation yet.'
+  );
 }
 
 async function loadRecognized() {
@@ -542,10 +576,23 @@ async function cleanupReports(mode) {
   }
 }
 
+function normalizeTestText(value) {
+  return String(value || '').toUpperCase().replace(/[^A-Z0-9]+/g, '');
+}
+
+function isTestRowAlert(it) {
+  if (it.error) return true;
+  if (it.status_code && Number(it.status_code) !== 200) return true;
+  const expected = normalizeTestText(it.expected_text || it.expected_label || '');
+  if (!expected) return false;
+  const predicted = normalizeTestText(it.normalized_predicted || it.predicted_text || '');
+  return predicted !== expected;
+}
+
 function renderTestItems(items) {
   const body = qs('#test_items_body');
   if (!items.length) { body.innerHTML = '<tr><td colspan="7">No data</td></tr>'; return; }
-  body.innerHTML = items.map(it => `<tr>
+  body.innerHTML = items.map(it => `<tr class="${isTestRowAlert(it) ? 'row-alert' : ''}">
     <td>${esc(it.file_name || '')}</td><td>${esc(it.predicted_text || '')}</td><td>${esc(it.expected_label || '')}</td><td>${esc(it.expected_text || '')}</td>
     <td>${esc(it.status_code || '')}</td><td>${esc(it.elapsed_ms || '')}</td><td>${esc(it.error || '')}</td>
   </tr>`).join('');
@@ -586,11 +633,7 @@ async function loadCleanupConfig() {
 setInterval(() => { if (qs('#logs_auto').checked) loadLogs().catch(() => {}); }, 3000);
 
 qs('#cfg_debug').addEventListener('change', () => {
-  if (isDebugImageHiddenBySetting()) {
-    showDebugPlaceholder('Debug image is hidden while "Enable debug visualization" is ON.');
-  } else {
-    refreshDebug().catch(() => {});
-  }
+  refreshDebug().catch(() => {});
 });
 
 qs('#test_folder').addEventListener('change', (e) => {
@@ -608,6 +651,8 @@ qs('#test_folder').addEventListener('change', (e) => {
   try {
     initTabSettings();
     showDebugPlaceholder('No debug image yet.');
+    showOptionalDebugPlaceholder('#debug_crop_img', '#debug_crop_placeholder', 'No debug crop yet.');
+    showOptionalDebugPlaceholder('#debug_seg_img', '#debug_seg_placeholder', 'No debug segmentation yet.');
     setDownloadReportState(false);
     await loadConfig();
     await refreshStatus();
